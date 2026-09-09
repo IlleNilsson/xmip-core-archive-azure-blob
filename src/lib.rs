@@ -4,6 +4,9 @@
 //! one block blob in a container, its metadata as a second blob beside it,
 //! and restores the item by getting both back.
 //!
+//! The metadata text, the timestamp, the layout and the checksum come
+//! from the archive capability (ADR-0044); only the dialect is this crate's.
+//!
 //! A xmip-core-archive **technology** (repository-model.md): it depends on
 //! the archive capability for the [`ArchiveStore`] trait and its item,
 //! receipt and error types, and on the Azure Blob transport technology for
@@ -18,11 +21,10 @@
 //! the SHA-256 of the bytes as its checksum, and restoring checks the bytes
 //! that come back against it.
 
-pub mod object;
-
 use std::time::Duration;
 
 use archive::{ArchiveError, ArchiveItem, ArchiveReceipt, ArchiveStore};
+use archive::{checksum, layout, metadata};
 use azure_blob::Client;
 
 /// An archive that keeps items as blobs under one prefix of one container.
@@ -82,8 +84,8 @@ impl AzureBlobArchive {
 
 impl ArchiveStore for AzureBlobArchive {
     fn archive(&self, item: ArchiveItem) -> Result<ArchiveReceipt, ArchiveError> {
-        let blob = object::key(&self.prefix, &item.data_type, &item.identifier);
-        let metadata = object::encode_metadata(&item.metadata);
+        let blob = layout::key(&self.prefix, &item.data_type, &item.identifier);
+        let metadata = metadata::encode(&item.metadata);
         let client = self.client()?;
         client
             .put(&self.container, &blob, &item.bytes)
@@ -91,20 +93,20 @@ impl ArchiveStore for AzureBlobArchive {
         client
             .put(
                 &self.container,
-                &object::meta_key(&blob),
+                &layout::meta_key(&blob),
                 metadata.as_bytes(),
             )
             .map_err(error)?;
         Ok(ArchiveReceipt {
             location: format!("azure-blob://{}/{}/{blob}", self.account, self.container),
-            checksum: Some(object::sha256_hex(&item.bytes)),
+            checksum: Some(checksum::sha256_hex(&item.bytes)),
         })
     }
 
     fn restore(&self, receipt: &ArchiveReceipt) -> Result<ArchiveItem, ArchiveError> {
         let (container, blob) = parse_location(&receipt.location)?;
         let (data_type, identifier) =
-            object::split_key(&self.prefix, blob).ok_or_else(|| ArchiveError {
+            layout::split_key(&self.prefix, blob).ok_or_else(|| ArchiveError {
                 message: format!(
                     "{blob} is not laid out as {}/<data_type>/<identifier>",
                     self.prefix
@@ -113,7 +115,7 @@ impl ArchiveStore for AzureBlobArchive {
         let client = self.client()?;
         let bytes = client.get(container, blob).map_err(error)?;
         if let Some(expected) = &receipt.checksum {
-            let actual = object::sha256_hex(&bytes);
+            let actual = checksum::sha256_hex(&bytes);
             if &actual != expected {
                 return Err(ArchiveError {
                     message: format!(
@@ -124,14 +126,14 @@ impl ArchiveStore for AzureBlobArchive {
             }
         }
         let metadata = client
-            .get(container, &object::meta_key(blob))
+            .get(container, &layout::meta_key(blob))
             .map_err(error)?;
         let metadata = String::from_utf8(metadata).map_err(error)?;
         Ok(ArchiveItem {
             data_type,
             identifier,
             bytes,
-            metadata: object::decode_metadata(&metadata),
+            metadata: metadata::decode(&metadata),
         })
     }
 }
@@ -219,7 +221,7 @@ mod tests {
         );
         assert_eq!(
             receipt.checksum.as_deref(),
-            Some(object::sha256_hex(&original.bytes).as_str())
+            Some(checksum::sha256_hex(&original.bytes).as_str())
         );
         let (session, events) = far_end.join().expect("thread");
         let held = session.blobs();
