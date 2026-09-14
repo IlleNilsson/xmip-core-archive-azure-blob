@@ -5,7 +5,9 @@
 //! and restores the item by getting both back.
 //!
 //! The metadata text, the timestamp, the layout and the checksum come
-//! from the archive capability (ADR-0044); only the dialect is this crate's.
+//! from the archive capability (ADR-0044); only the dialect is this crate's,
+//! and so is the receipt: three parts, account, container and blob, a shape
+//! no other technology has.
 //!
 //! A xmip-core-archive **technology** (repository-model.md): it depends on
 //! the archive capability for the [`ArchiveStore`] trait and its item,
@@ -13,7 +15,7 @@
 //! the signed requests — Shared Key over the Blob REST API, one connection
 //! a call. The same four fields every archive technology carries —
 //! `data_type`, `identifier`, `bytes`, `metadata` — are laid out as
-//! `object.rs` says: the bytes at `<prefix>/<data_type>/<identifier>`, the
+//! `archive::layout` says: the bytes at `<prefix>/<data_type>/<identifier>`, the
 //! metadata text at the same name with `.meta` appended.
 //!
 //! An archive never deletes (ADR-0040): this one puts and gets, nothing
@@ -74,7 +76,8 @@ impl AzureBlobArchive {
     }
 
     fn client(&self) -> Result<Client, ArchiveError> {
-        let client = Client::new(&self.endpoint, &self.account, &self.key_base64).map_err(error)?;
+        let client = Client::new(&self.endpoint, &self.account, &self.key_base64)
+            .map_err(ArchiveError::caused_by)?;
         Ok(match self.timeout {
             Some(timeout) => client.timing_out_after(timeout),
             None => client,
@@ -89,14 +92,14 @@ impl ArchiveStore for AzureBlobArchive {
         let client = self.client()?;
         client
             .put(&self.container, &blob, &item.bytes)
-            .map_err(error)?;
+            .map_err(ArchiveError::caused_by)?;
         client
             .put(
                 &self.container,
                 &layout::meta_key(&blob),
                 metadata.as_bytes(),
             )
-            .map_err(error)?;
+            .map_err(ArchiveError::caused_by)?;
         Ok(ArchiveReceipt {
             location: format!("azure-blob://{}/{}/{blob}", self.account, self.container),
             checksum: Some(checksum::sha256_hex(&item.bytes)),
@@ -113,7 +116,9 @@ impl ArchiveStore for AzureBlobArchive {
                 ),
             })?;
         let client = self.client()?;
-        let bytes = client.get(container, blob).map_err(error)?;
+        let bytes = client
+            .get(container, blob)
+            .map_err(ArchiveError::caused_by)?;
         if let Some(expected) = &receipt.checksum {
             let actual = checksum::sha256_hex(&bytes);
             if &actual != expected {
@@ -127,8 +132,8 @@ impl ArchiveStore for AzureBlobArchive {
         }
         let metadata = client
             .get(container, &layout::meta_key(blob))
-            .map_err(error)?;
-        let metadata = String::from_utf8(metadata).map_err(error)?;
+            .map_err(ArchiveError::caused_by)?;
+        let metadata = String::from_utf8(metadata).map_err(ArchiveError::caused_by)?;
         Ok(ArchiveItem {
             data_type,
             identifier,
@@ -158,34 +163,16 @@ fn parse_location(location: &str) -> Result<(&str, &str), ArchiveError> {
     }
 }
 
-fn error(cause: impl std::fmt::Display) -> ArchiveError {
-    ArchiveError {
-        message: cause.to_string(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use archive::fixture::{item, secs};
     use azure_blob::{Event, Session};
     use std::net::TcpListener;
     use std::thread::JoinHandle;
 
     /// `secret`, base64.
     const KEY: &str = "c2VjcmV0";
-
-    fn secs(n: u64) -> Duration {
-        Duration::from_secs(n)
-    }
-
-    fn item(id: &str) -> ArchiveItem {
-        ArchiveItem {
-            data_type: "json".to_string(),
-            identifier: id.to_string(),
-            bytes: b"{\"kept\":true}".to_vec(),
-            metadata: vec![("source".to_string(), "playground".to_string())],
-        }
-    }
 
     /// A far end that answers `requests` signed requests, one connection
     /// each, and then hands back what it holds and what it saw.
