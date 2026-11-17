@@ -262,7 +262,7 @@ mod tests {
         assert!(missing.message.contains("404 BlobNotFound"), "{missing}");
         far_end.join().expect("thread");
         for location in [
-            "s3://bucket/key",
+            "aws-s3://bucket/key",
             "azure-blob://acct/orders-archive",
             "azure-blob://acct/orders-archive/elsewhere/n",
         ] {
