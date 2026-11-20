@@ -103,7 +103,7 @@ impl Named for AzureBlobArchive {
             .client()?
             .put_new(&self.container, key, bytes)
             .map_err(ArchiveError::caused_by)?;
-        Ok(if stored {
+        Ok(if stored.is_some() {
             Created::Created
         } else {
             Created::Exists
